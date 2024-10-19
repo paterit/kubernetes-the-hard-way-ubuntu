@@ -1,4 +1,8 @@
-.PHONY: machines-launch
+.PHONY: machines-launch machines-delete prep-machines jumpbox-prep jumpbox-launch jumpbox-install-packages jumpbox-git-clone-k8s-the-hard-way
+.PHONY: jumpbox-download jumpbox-install-kubectl create-snapshots restore-snapshots
+
+MACHINES := jumpbox server node-0 node-1
+SNAP := "snap"
 
 prep-machines: jumpbox-prep machines-launch
 
@@ -13,11 +17,26 @@ machines-launch:
 	multipass launch -n node-1 -c 1 -m 2G -d 20GB
 
 machines-delete:
-	-multipass delete jumpbox 
-	-multipass delete server
-	-multipass delete node-0
-	-multipass delete node-1
+	for machine in $(MACHINES); do \
+		multipass stop $$machine; \
+		multipass delete $$machine; \
+	done
 	multipass purge
+
+create-snapshots:
+	for machine in $(MACHINES); do \
+		multipass stop $$machine; \
+		multipass delete --purge $$machine.$(SNAP); \
+		multipass snapshot -n $(SNAP) $$machine; \
+		multipass start $$machine; \
+	done
+
+restore-snapshots:
+	for machine in $(MACHINES); do \
+		multipass stop $$machine; \
+		multipass restore --destructive $$machine.$(SNAP); \
+		multipass start $$machine; \
+	done
 
 jumpbox-install-packages:
 	multipass exec jumpbox -- sudo apt update
