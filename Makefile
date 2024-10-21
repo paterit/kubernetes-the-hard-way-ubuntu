@@ -1,6 +1,7 @@
 .PHONY: all all-machines-launch jumpbox-launch machines-launch machines-delete create-snapshots restore-snapshots
 .PHONY: jumpbox-prep jumpbox-install-packages jumpbox-git-clone-k8s-the-hard-way jumpbox-download jumpbox-install-kubectl
 .PHONY: configure-ssh-access machine-database enable-root-ssh-access generate-ssh-keys copy-ssh-keys verify-ssh-access set-hostnames verify-hostnames add-hosts-entries verify-hosts-entries
+.PHONY: provisioning-ca-generate-tls-certificates generate-ca-files create-client-server-certificates copy-keys-certs-to-nodes copy-certs-pkeys-to-server ca-files-clean
 
 MACHINES := jumpbox server node-0 node-1
 SNAP := "snap"
@@ -9,7 +10,7 @@ SNAP := "snap"
 MSG_COLOR := \033[0;32m # green
 NC := \033[0m # No Color
 
-all: all-machines-launch jumpbox-prep configure-ssh-access
+all: all-machines-launch jumpbox-prep configure-ssh-access provisioning-ca-generate-tls-certificates
 
 reset-all: machines-delete all
 
@@ -148,3 +149,67 @@ verify-hosts-entries:
 	multipass exec server -- ping -c 1 node-0.kubernetes.local
 	multipass exec node-0 -- ping -c 1 node-1.kubernetes.local
 	multipass exec node-1 -- ping -c 1 jumpbox.kubernetes.local
+
+# Provisioning a CA and Generating TLS Certificates
+
+provisioning-ca-generate-tls-certificates: generate-ca-files create-client-server-certificates copy-keys-certs-to-nodes copy-certs-pkeys-to-server ca-files-clean
+
+generate-ca-files:
+	@printf "$(MSG_COLOR)Running target: %s$(NC)\n" "$@"
+	-rm -rf ca_files
+	mkdir -p ca_files
+	cp ca.conf ca_files/
+	cd ca_files && \
+	openssl genrsa -out ca.key 4096 && \
+	openssl req -x509 -new -sha512 -noenc \
+		-key ca.key -days 3653 \
+		-config ca.conf \
+		-out ca.crt
+
+CERTS = admin node-0 node-1 kube-proxy kube-scheduler kube-controller-manager kube-api-server service-accounts
+
+create-client-server-certificates:
+	@printf "$(MSG_COLOR)Running target: %s$(NC)\n" "$@"
+	for cert in $(CERTS); do \
+		cd ca_files && \
+		openssl genrsa -out $$cert.key 4096 && \
+		openssl req -new -sha256 \
+			-key $$cert.key \
+			-config ca.conf \
+			-section $$cert \
+			-out $$cert.csr && \
+		openssl x509 -req -in $$cert.csr \
+			-copy_extensions copyall \
+			-CA ca.crt \
+			-CAkey ca.key \
+			-CAcreateserial \
+			-days 3653 \
+			-sha256 \
+			-out $$cert.crt && \
+		cd ..; \
+	done
+
+copy-keys-certs-to-nodes:
+	@printf "$(MSG_COLOR)Running target: %s$(NC)\n" "$@"
+	for machine in node-0 node-1; do \
+		multipass exec $$machine -- sudo mkdir -p /var/lib/kubelet; \
+	 	multipass transfer ca_files/ca.crt $$machine:/home/ubuntu/ca.crt; \
+	 	multipass transfer ca_files/$$machine.crt $$machine:/home/ubuntu/kubelet.crt; \
+	 	multipass transfer ca_files/$$machine.key $$machine:/home/ubuntu/kubelet.key; \
+		multipass exec $$machine -- sudo mv /home/ubuntu/ca.crt /var/lib/kubelet/ca.crt; \
+		multipass exec $$machine -- sudo mv /home/ubuntu/kubelet.crt /var/lib/kubelet/kubelet.crt; \
+		multipass exec $$machine -- sudo mv /home/ubuntu/kubelet.key /var/lib/kubelet/kubelet.key; \
+	done
+
+SERVER_CERTS = ca kube-api-server service-accounts
+
+copy-certs-pkeys-to-server:
+	@printf "$(MSG_COLOR)Running target: %s$(NC)\n" "$@"
+	for cert in $(SERVER_CERTS); do \
+		multipass transfer ca_files/$$cert.crt server:/home/ubuntu/$$cert.crt; \
+		multipass transfer ca_files/$$cert.key server:/home/ubuntu/$$cert.key; \
+	done
+
+ca-files-clean:
+	@printf "$(MSG_COLOR)Running target: %s$(NC)\n" "$@"
+	-rm -rf ca_files
