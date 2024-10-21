@@ -7,6 +7,8 @@ SNAP := "snap"
 
 all: all-machines-launch jumpbox-prep configure-ssh-access
 
+reset-all: machines-delete all
+
 # Prerequisites
 
 all-machines-launch: machines-launch jumpbox-launch
@@ -65,7 +67,7 @@ jumpbox-install-kubectl:
 
 # Provisioning Compute Resources
 
-configure-ssh-access: machine-database enable-root-ssh-access generate-ssh-keys copy-ssh-keys verify-ssh-access
+configure-ssh-access: machine-database enable-root-ssh-access generate-ssh-keys copy-ssh-keys verify-ssh-access set-hostnames verify-hostnames add-hosts-entries verify-hosts-entries
 
 machine-database:
 	echo "IPV4_ADDRESS FQDN HOSTNAME POD_SUBNET" > machines.txt
@@ -94,3 +96,33 @@ verify-ssh-access:
 		multipass exec jumpbox -- ssh -o StrictHostKeyChecking=no -n ubuntu@$$machine uname -o -m; \
 	done
 
+set-hostnames:
+	multipass exec server -- sudo hostnamectl set-hostname server.kubernetes.local
+	multipass exec node-0 -- sudo hostnamectl set-hostname node-0.kubernetes.local
+	multipass exec node-1 -- sudo hostnamectl set-hostname node-1.kubernetes.local
+
+verify-hostnames:
+	for machine in $(MACHINES); do \
+		multipass exec jumpbox -- ssh -n ubuntu@$$machine hostname --fqdn ; \
+	done
+
+add-hosts-entries:
+	echo "# Kubernetes the hard way" > hosts
+	for machine in $(MACHINES); do \
+		echo "$$(multipass info $$machine | grep IPv4 | awk '{print $$2}') $$machine.kubernetes.local $$machine" >> hosts; \
+		CMD="sudo sed -i 's/^127.0.1.1.*/127.0.1.1 $$machine.kubernetes.local $$machine/' /etc/hosts"; \
+		multipass exec jumpbox -- ssh -n ubuntu@$$machine "$$CMD"; \
+	done
+	multipass transfer hosts jumpbox:/home/ubuntu/hosts
+
+	for machine in $(MACHINES); do \
+		multipass exec jumpbox -- scp -q /home/ubuntu/hosts ubuntu@$$machine:/home/ubuntu/hosts; \
+		multipass exec jumpbox -- ssh -n ubuntu@$$machine "cat /home/ubuntu/hosts | sudo tee -a /etc/hosts > /dev/null "; \
+		multipass exec jumpbox -- ssh -n ubuntu@$$machine "cat /home/ubuntu/hosts | sudo tee -a /etc/cloud/templates/hosts.debian.tmpl > /dev/null" ; \
+	done
+
+verify-hosts-entries:
+	multipass exec jumpbox -- ping -c 1 server.kubernetes.local
+	multipass exec server -- ping -c 1 node-0.kubernetes.local
+	multipass exec node-0 -- ping -c 1 node-1.kubernetes.local
+	multipass exec node-1 -- ping -c 1 jumpbox.kubernetes.local
