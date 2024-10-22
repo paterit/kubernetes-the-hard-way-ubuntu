@@ -152,7 +152,7 @@ verify-hosts-entries:
 
 # Provisioning a CA and Generating TLS Certificates
 
-provisioning-ca-generate-tls-certificates: generate-ca-files create-client-server-certificates copy-keys-certs-to-nodes copy-certs-pkeys-to-server ca-files-clean
+provisioning-ca-generate-tls-certificates: generate-ca-files create-client-server-certificates copy-keys-certs-to-nodes copy-certs-pkeys-to-server
 
 generate-ca-files:
 	@printf "$(MSG_COLOR)Running target: %s$(NC)\n" "$@"
@@ -209,6 +209,97 @@ copy-certs-pkeys-to-server:
 		multipass transfer ca_files/$$cert.crt server:/home/ubuntu/$$cert.crt; \
 		multipass transfer ca_files/$$cert.key server:/home/ubuntu/$$cert.key; \
 	done
+
+# Generating Kubernetes Configuration Files for Authentication
+
+make generate-kubeconfig-files: generate-kubeconfig-nodes generate-kubeconfig-server generate-kubeconfig-admin copy-kube-configfiles-to-nodes copy-kube-configfiles-to-server
+
+generate-kubeconfig-nodes:
+	@printf "$(MSG_COLOR)Running target: %s$(NC)\n" "$@"
+	for host in node-0 node-1; do \
+		cd ca_files && \
+		kubectl config set-cluster kubernetes-the-hard-way \
+			--certificate-authority=ca.crt \
+			--embed-certs=true \
+			--server=https://server.kubernetes.local:6443 \
+			--kubeconfig=$$host.kubeconfig && \
+		kubectl config set-credentials system:node:$$host \
+			--client-certificate=$$host.crt \
+			--client-key=$$host.key \
+			--embed-certs=true \
+			--kubeconfig=$$host.kubeconfig && \
+		kubectl config set-context default \
+			--cluster=kubernetes-the-hard-way \
+			--user=system:node:$$host \
+			--kubeconfig=$$host.kubeconfig && \
+		kubectl config use-context default \
+			--kubeconfig=$$host.kubeconfig && \
+		cd ..; \
+	done
+
+generate-kubeconfig-server:
+	@printf "$(MSG_COLOR)Running target: %s$(NC)\n" "$@"
+	for host in kube-controller-manager kube-scheduler kube-proxy; do \
+		cd ca_files && \
+		kubectl config set-cluster kubernetes-the-hard-way \
+			--certificate-authority=ca.crt \
+			--embed-certs=true \
+			--server=https://server.kubernetes.local:6443 \
+			--kubeconfig=$$host.kubeconfig && \
+		kubectl config set-credentials system:$$host \
+			--client-certificate=$$host.crt \
+			--client-key=$$host.key \
+			--embed-certs=true \
+			--kubeconfig=$$host.kubeconfig && \
+		kubectl config set-context default \
+			--cluster=kubernetes-the-hard-way \
+			--user=system:$$host \
+			--kubeconfig=$$host.kubeconfig && \
+		kubectl config use-context default \
+			--kubeconfig=$$host.kubeconfig && \
+		cd ..; \
+	done
+
+generate-kubeconfig-admin:
+	@printf "$(MSG_COLOR)Running target: %s$(NC)\n" "$@"
+	for host in admin; do \
+		cd ca_files && \
+		kubectl config set-cluster kubernetes-the-hard-way \
+			--certificate-authority=ca.crt \
+			--embed-certs=true \
+			--server=https://127.0.0.1:6443 \
+			--kubeconfig=$$host.kubeconfig && \
+		kubectl config set-credentials $$host \
+			--client-certificate=$$host.crt \
+			--client-key=$$host.key \
+			--embed-certs=true \
+			--kubeconfig=$$host.kubeconfig && \
+		kubectl config set-context default \
+			--cluster=kubernetes-the-hard-way \
+			--user=$$host \
+			--kubeconfig=$$host.kubeconfig && \
+		kubectl config use-context default \
+			--kubeconfig=$$host.kubeconfig && \
+		cd ..; \
+	done
+
+copy-kube-configfiles-to-nodes:
+	@printf "$(MSG_COLOR)Running target: %s$(NC)\n" "$@"
+	for machine in node-0 node-1; do \
+		multipass exec $$machine -- sudo mkdir -p /var/lib/kube-proxy; \
+	 	multipass transfer ca_files/kube-proxy.kubeconfig $$machine:/home/ubuntu/kube-proxy.kubeconfig; \
+	 	multipass transfer ca_files/$$machine.kubeconfig $$machine:/home/ubuntu/$$machine.kubeconfig; \
+		multipass exec $$machine -- sudo mv /home/ubuntu/kube-proxy.kubeconfig /var/lib/kube-proxy/kubeconfig; \
+		multipass exec $$machine -- sudo mv /home/ubuntu/$$machine.kubeconfig /var/lib/kubelet/kubeconfig; \
+	done
+
+
+copy-kube-configfiles-to-server:
+	@printf "$(MSG_COLOR)Running target: %s$(NC)\n" "$@"
+	multipass transfer ca_files/kube-controller-manager.kubeconfig server:/home/ubuntu/kube-controller-manager.kubeconfig
+	multipass transfer ca_files/admin.kubeconfig server:/home/ubuntu/admin.kubeconfig
+	multipass transfer ca_files/kube-scheduler.kubeconfig server:/home/ubuntu/kube-scheduler.kubeconfig
+
 
 ca-files-clean:
 	@printf "$(MSG_COLOR)Running target: %s$(NC)\n" "$@"
