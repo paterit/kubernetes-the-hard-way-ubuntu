@@ -304,3 +304,10 @@ copy-kube-configfiles-to-server:
 ca-files-clean:
 	@printf "$(MSG_COLOR)Running target: %s$(NC)\n" "$@"
 	-rm -rf ca_files
+
+# Generating the Data Encryption Config and Key
+
+generate-encryption-key:
+	@printf "$(MSG_COLOR)Running target: %s$(NC)\n" "$@"
+	export ENCRYPTION_KEY=$$(head -c 32 /dev/urandom | base64) && \
+	envsubst < configs/encryption-config.yaml > ca_files/encryption-config.yaml
