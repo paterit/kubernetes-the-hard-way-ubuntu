@@ -10,7 +10,11 @@ SNAP := "snap"
 MSG_COLOR := \033[0;32m # green
 NC := \033[0m # No Color
 
-all: all-machines-launch jumpbox-prep configure-ssh-access provisioning-ca-generate-tls-certificates
+all: all-machines-launch jumpbox-prep configure-all
+
+configure-all: configure-ssh-access provisioning-ca-generate-tls-certificates generate-encryption-key bootstrapping-etcd-cluster
+
+restore-configure: restore-snapshots configure-all
 
 reset-all: machines-delete all
 
@@ -296,9 +300,11 @@ copy-kube-configfiles-to-nodes:
 
 copy-kube-configfiles-to-server:
 	@printf "$(MSG_COLOR)Running target: %s$(NC)\n" "$@"
-	multipass transfer ca_files/kube-controller-manager.kubeconfig server:/home/ubuntu/kube-controller-manager.kubeconfig
-	multipass transfer ca_files/admin.kubeconfig server:/home/ubuntu/admin.kubeconfig
-	multipass transfer ca_files/kube-scheduler.kubeconfig server:/home/ubuntu/kube-scheduler.kubeconfig
+	multipass transfer \
+		ca_files/kube-controller-manager.kubeconfig \
+		ca_files/admin.kubeconfig \
+		ca_files/kube-scheduler.kubeconfig \
+	server:/home/ubuntu/
 
 
 ca-files-clean:
@@ -311,3 +317,32 @@ generate-encryption-key:
 	@printf "$(MSG_COLOR)Running target: %s$(NC)\n" "$@"
 	export ENCRYPTION_KEY=$$(head -c 32 /dev/urandom | base64) && \
 	envsubst < configs/encryption-config.yaml > ca_files/encryption-config.yaml
+
+# Bootstrapping the etcd Cluster
+
+bootstrapping-etcd-cluster: copy-etc-binaries install-etc-binaries configure-etcd-server start-etcd-server
+
+copy-etc-binaries:
+	@printf "$(MSG_COLOR)Running target: %s$(NC)\n" "$@"
+	multipass exec jumpbox -- scp -q /home/ubuntu/kubernetes-the-hard-way/downloads/etcd-v3.4.27-linux-amd64.tar.gz ubuntu@server:/home/ubuntu/
+	multipass transfer units/etcd.service server:/home/ubuntu/etcd.service
+
+install-etc-binaries:
+	@printf "$(MSG_COLOR)Running target: %s$(NC)\n" "$@"
+	multipass exec server -- tar -xf etcd-v3.4.27-linux-amd64.tar.gz
+	multipass exec server -- sudo mv /home/ubuntu/etcd-v3.4.27-linux-amd64/etcd /usr/local/bin/
+	multipass exec server -- sudo mv /home/ubuntu/etcd-v3.4.27-linux-amd64/etcdctl /usr/local/bin/
+
+configure-etcd-server:
+	@printf "$(MSG_COLOR)Running target: %s$(NC)\n" "$@"
+	multipass exec server -- sudo mkdir -p /etc/etcd /var/lib/etcd
+	multipass exec server -- sudo chmod 700 /var/lib/etcd
+	multipass exec server -- sudo cp ca.crt kube-api-server.key kube-api-server.crt /etc/etcd/
+	multipass exec server -- sudo mv etcd.service /etc/systemd/system/
+
+start-etcd-server:
+	@printf "$(MSG_COLOR)Running target: %s$(NC)\n" "$@"
+	multipass exec server -- sudo systemctl daemon-reload
+	multipass exec server -- sudo systemctl enable etcd
+	multipass exec server -- sudo systemctl start etcd
+	multipass exec server -- sudo etcdctl member list
