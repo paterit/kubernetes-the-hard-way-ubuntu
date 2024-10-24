@@ -10,9 +10,10 @@ SNAP := "snap"
 MSG_COLOR := \033[0;32m # green
 NC := \033[0m # No Color
 
-all: all-machines-launch jumpbox-prep configure-all
+all: all-machines-launch jumpbox-prep create-snapshots configure-all
 
-configure-all: configure-ssh-access provisioning-ca-generate-tls-certificates generate-encryption-key bootstrapping-etcd-cluster
+configure-all: configure-ssh-access provisioning-ca-generate-tls-certificates generate-kubeconfig-files \
+	generate-encryption-key bootstrapping-etcd-cluster bootstrapping-kube-control-plane
 
 restore-configure: restore-snapshots configure-all
 
@@ -317,6 +318,7 @@ generate-encryption-key:
 	@printf "$(MSG_COLOR)Running target: %s$(NC)\n" "$@"
 	export ENCRYPTION_KEY=$$(head -c 32 /dev/urandom | base64) && \
 	envsubst < configs/encryption-config.yaml > ca_files/encryption-config.yaml
+	multipass transfer ca_files/encryption-config.yaml server:./
 
 # Bootstrapping the etcd Cluster
 
@@ -346,3 +348,57 @@ start-etcd-server:
 	multipass exec server -- sudo systemctl enable etcd
 	multipass exec server -- sudo systemctl start etcd
 	multipass exec server -- sudo etcdctl member list
+
+# Bootstrapping the Kubernetes Control Plane
+
+bootstrapping-kube-control-plane: copy-binaries-and-configs configure-kube-apiserver verify-kube-apiserver rbac-for-kubelet-authorization verify-kubelet-authorization
+
+copy-binaries-and-configs:
+	@printf "$(MSG_COLOR)Running target: %s$(NC)\n" "$@"
+	for file in kube-apiserver kube-controller-manager kube-scheduler kubectl; do \
+		multipass exec jumpbox -- scp -q /home/ubuntu/kubernetes-the-hard-way/downloads/$$file ubuntu@server:/home/ubuntu/; \
+	done
+	for file in kube-apiserver kube-controller-manager kube-scheduler; do \
+		multipass transfer units/$$file.service server:/home/ubuntu/; \
+	done
+	for file in kube-scheduler kube-apiserver-to-kubelet; do \
+		multipass transfer configs/$$file.yaml server:/home/ubuntu/; \
+	done
+
+configure-kube-apiserver:
+	@printf "$(MSG_COLOR)Running target: %s$(NC)\n" "$@"
+	# install binaries
+	multipass exec server -- sudo mkdir -p /etc/kubernetes/config
+	multipass exec server -- sudo chmod +x kube-apiserver kube-controller-manager kube-scheduler kubectl
+	# for re-runs of this target we need to stop the services first and then copy the binaries
+	-multipass exec server -- sudo systemctl stop kube-apiserver kube-controller-manager kube-scheduler
+	multipass exec server -- sudo cp kube-apiserver kube-controller-manager kube-scheduler kubectl /usr/local/bin/
+	# configure kube-apiserver
+	multipass exec server -- sudo mkdir -p /var/lib/kubernetes/
+	multipass exec server -- sudo cp ca.crt ca.key kube-api-server.crt kube-api-server.key service-accounts.crt service-accounts.key encryption-config.yaml /var/lib/kubernetes/
+	multipass exec server -- sudo cp kube-apiserver.service /etc/systemd/system/
+	# configure kube-controller-manager
+	multipass exec server -- sudo cp kube-controller-manager.kubeconfig /var/lib/kubernetes/
+	multipass exec server -- sudo cp kube-controller-manager.service /etc/systemd/system/
+	# configure kube-scheduler
+	multipass exec server -- sudo cp kube-scheduler.kubeconfig /var/lib/kubernetes/
+	multipass exec server -- sudo cp kube-scheduler.service /etc/systemd/system/
+	multipass exec server -- sudo cp kube-scheduler.yaml /etc/kubernetes/config/
+	# start the controller service
+	multipass exec server -- sudo systemctl daemon-reload
+	multipass exec server -- sudo systemctl enable kube-apiserver kube-controller-manager kube-scheduler
+	multipass exec server -- sudo systemctl start kube-apiserver kube-controller-manager kube-scheduler
+
+verify-kube-apiserver:
+	@printf "$(MSG_COLOR)Running target: %s$(NC)\n" "$@"
+	# Allow up to 10 seconds for the Kubernetes API Server to fully initialize.
+	sleep 10
+	multipass exec server -- sudo kubectl cluster-info --kubeconfig admin.kubeconfig
+
+rbac-for-kubelet-authorization:
+	@printf "$(MSG_COLOR)Running target: %s$(NC)\n" "$@"
+	multipass exec server -- sudo kubectl apply -f kube-apiserver-to-kubelet.yaml --kubeconfig admin.kubeconfig
+
+verify-kubelet-authorization:
+	multipass exec jumpbox -- curl -k --cacert ca.crt https://server.kubernetes.local:6443/version
+
